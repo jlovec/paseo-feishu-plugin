@@ -17,9 +17,6 @@ dist/
 .paseo/
 *.local.json
 
-# 本地 issue tracker 草稿（spec 与 ticket 要不要入库由主人决定，默认忽略）
-.scratch/
-
 # 编辑器
 .vscode/
 .idea/
