@@ -14,7 +14,7 @@
 paseo plugin install git:jlovec/paseo-feishu-plugin
 ```
 
-`paseo-plugin.json` 声明了 `build` 步骤（`npm ci --omit=dev`），Git 安装时会自动装好 `@larksuiteoapi/node-sdk` 与 `qrcode`。
+`paseo-plugin.json` 声明了 `build` 步骤（`npm ci`），Git 安装时会自动装好运行时依赖，以及编译期类型解析需要的 `@getpaseo/plugin`。
 
 每台机器应通过设置页扫码**创建独立的飞书应用**：飞书长连接是集群模式、不广播，同一应用部署多个客户端时事件只会随机投递到一个实例，另一台的审批回调会落空。
 
