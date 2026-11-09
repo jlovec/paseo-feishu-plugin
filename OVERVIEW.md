@@ -11,7 +11,7 @@
 在 Paseo 所在机器上执行：
 
 ```bash
-paseo plugin install git:jlovec/paseo-feishu-plugin --ref feat/approval-notify
+paseo plugin install git:jlovec/paseo-feishu-plugin
 ```
 
 `paseo-plugin.json` 声明了 `build` 步骤（`npm ci --omit=dev`），Git 安装时会自动装好 `@larksuiteoapi/node-sdk` 与 `qrcode`。
