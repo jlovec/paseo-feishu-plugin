@@ -1,0 +1,31 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 构建产物
+dist/
+*.tsbuildinfo
+
+# 密钥与环境变量：飞书 App Secret 绝不能入库
+.env
+.env.*
+*.secret
+*.pem
+*.key
+
+# Paseo 插件设置与运行时产物（含 appSecret 明文）
+.paseo/
+*.local.json
+
+# 本地 issue tracker 草稿（spec 与 ticket 要不要入库由主人决定，默认忽略）
+.scratch/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# 日志
+*.log
+npm-debug.log*
