@@ -18,6 +18,14 @@
 | `question` 型审批 | 先实测 AskUserQuestion 的真实 payload，再决定是否渲染成按钮 |
 | 代码位置 | `/home/joey/code/paseo-feishu-plugin/`，已 `git init` |
 
+## 实施现状（2026-11-09）
+
+第 1–6 步全部完成并在真机验证：扫码建机器人、会话完成/失败通知、
+`question` / `tool` / `plan` 三类审批的飞书应答、30 秒通知合并、
+断线重连观测。真实 agent 流量下长连接稳定运行。
+
+关键实测结论见 `docs/adr/0004`（卡片回调）与 `docs/adr/0005`（通知合并）。
+
 ## 技术基础（已调研验证）
 
 ### Paseo 插件系统（本机 0.14.0，`pluginsEnabled: true`）
@@ -141,7 +149,9 @@ paseo-feishu-plugin/
 
 摘要取 `timeline.refetch({direction:"tail", limit:20})` 的末条输出，截断到卡片可读长度。
 
-降噪：同一 agent 在 30 秒窗口内连续结束的 turn 只发最后一条；失败一定发。
+降噪（已实现，见 `docs/adr/0005`）：同一 agent 的连续完成通知按 30 秒窗口合并，
+窗口从第一张卡发出时开始计时；窗口内更新同一条消息并标注「30 秒内合并 N 轮」。
+失败/取消不合并，独立发卡。
 
 ## 功能二：审批卡片
 
@@ -168,24 +178,32 @@ variant "secondary" → default
 ```
 飞书按钮点击
   → card.action.trigger（长连接推送）
-  → ws.ts 校验载荷
-  → 查 requestId 是否仍 pending
-     ├─ 已处理 → toast「已处理过了」+ 卡片置灰
-     └─ 仍 pending
-         → respondToPermission({requestId, response})
-         → toast「已通过：<label>」
-         → patch 卡片：按钮禁用，显示「已由 xxx 处理」
+  → permission-bot.ts 校验载荷（event_id 去重、点击者、requestId）
+  → 仍 pending 时 respondToPermission({requestId, response})
+  → 回调响应体返回 { toast, card: {type:"raw", data:<新卡片>} }
+       ├─ option 点击 → 带勾选状态的草稿卡
+       └─ 提交/允许/拒绝 → 灰色结果卡
+  → agent.permission_resolved 钩子 → patch 卡片置灰并删除 pending
 ```
 
-### kind 分型
+回调响应必须携带 `card`，只回 `toast` 会被客户端用原始卡片覆盖（见 `docs/adr/0004`）。
+`respondToPermission` 之后不立即删除 pending，否则置灰钩子找不到记录。
 
-- `tool` / `mode` / `other`：标准按钮组
-- `plan`：正文放 plan 全文，截断 3000 字，按钮组用 actions
-- `question`：先实测。若选项在 `input.questions[].options` 且结构清晰，渲染成按钮并回传 `updatedInput`；否则降级为「打开 Paseo」按钮
+### kind 分型（已实测确认，见 `docs/adr/0001`）
+
+- `tool` / `mode` / `other`：标准按钮组，`actions` 为 `undefined`，按钮自己造
+- `plan`：正文放 plan 全文，截断 3000 字，按钮组直接映射 `actions[]`，
+  回传 `selectedActionId`
+- `question`：**已实测**。选项在 `input.questions[].options[].label`，逐题渲染按钮组。
+  点击后组装 `updatedInput: { questions: <原样>, answers: { <题干全文>: <label> } }`，
+  `behavior` 给 `allow`。多题时一次性收集所有答案再提交。
+  `allowOther: true` 时追加一个「其他」自由输入入口。
 
 ### 时效
 
-卡片带 30 分钟有效期标记。`agent.permission.after` 一触发就把卡片标记为「已在别处处理」。
+待处理项只存在插件进程内存里，Paseo 侧超时或插件重启后，旧卡片再点会提示
+「请求已处理或已过期」。`agent.permission_resolved` 一触发就把卡片置灰；
+无论审批是在飞书点按钮还是在 Paseo 界面处理，都会走同一条置灰路径。
 
 ## 功能三：扫码建机器人
 
@@ -209,14 +227,14 @@ variant "secondary" → default
 
 扫码成功后，如果 app 缺 scope，屏上给开放平台的授权跳转链接。
 
-## 落地顺序
+## 落地顺序（全部完成）
 
-1. 骨架：`paseo-plugin.json`、tsconfig、两个入口、`defineSettings`、一个测试 RPC。装上 `paseo plugin ls` 看到 running
-2. payload 实测：只挂 `agent.permission.before`，把真实 request 打到插件日志。跑一次 Claude 的 AskUserQuestion 和一个 shell 审批，记录结构
-3. 扫码：`app-registration.ts` + `qr.ts` + 设置屏。扫一次真实二维码，确认拿到 appId/secret 且能发消息
-4. 发消息：`feishu-client.ts` + `notify.ts`。跑一个 agent，确认收到完成卡片
-5. 审批：`approval.ts` + `ws.ts` 回调。点按钮确认 Paseo 真的继续执行
-6. 打磨：降噪、卡片样式、错误提示、重连退避
+1. ✅ 骨架：`paseo-plugin.json`、tsconfig、两个入口、`defineSettings`、一个测试 RPC
+2. ✅ payload 实测：`question` / `tool` / `plan` 三类真实 request 结构已记录
+3. ✅ 扫码：`app-registration.ts` + 设置屏，真实扫码拿到 appId/secret 并能发消息
+4. ✅ 发消息：`feishu-client.ts` + `notify.ts`，完成卡片端到端验证
+5. ✅ 审批：`permission-bot.ts` 长连接 + 回调，三类审批都在飞书上点通过
+6. ✅ 打磨：30 秒通知合并、重连观测日志、回调响应携带卡片
 
 ## 风险
 
@@ -226,9 +244,9 @@ variant "secondary" → default
 | App Secret 明文落盘 | 文档提示；不写进日志 |
 | 扫码 app 权限不足 | 第 3 步实测；缺了给补授权链接 |
 | `question` 结构未知 | 第 2 步实测后再定 |
-| 长连接断线 | 指数退避重连；状态在设置屏可见 |
+| 长连接断线 | SDK 自带 `autoReconnect`，重连参数由服务端下发；插件只记 `onReconnecting` / `onReconnected` 日志，不自行调参 |
 | 多主机 | 插件按 daemon 安装，各管各的 |
 
 ## 待确认
 
-- 无。三项决定已确认，剩下的是第 2 步实测后才能定稿的 `question` 渲染方式。
+- 无。
