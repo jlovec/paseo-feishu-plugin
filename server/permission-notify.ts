@@ -1,6 +1,8 @@
+import type { PaseoApi } from "@getpaseo/client";
 import type { PluginHookAgent, PluginLifecycleEvents } from "@getpaseo/plugin/server";
 import type { FeishuSettingsValues } from "../shared/settings";
 import { sendCard } from "./feishu-client";
+import { agentLink } from "./paseo-link";
 import { buildPermissionCard } from "./permission-cards";
 import { resolvePermissionCard, trackPermission } from "./permission-bot";
 
@@ -8,6 +10,7 @@ type AgentPermissionRequest = PluginLifecycleEvents["agent.permission_requested"
 type AgentPermissionResponse = PluginLifecycleEvents["agent.permission_resolved"]["resolution"];
 
 export interface NotifyPermissionParams {
+  paseo: PaseoApi;
   agent: PluginHookAgent;
   request: AgentPermissionRequest;
   values: FeishuSettingsValues;
@@ -15,13 +18,17 @@ export interface NotifyPermissionParams {
 
 /** 审批请求到达时发卡片。返回是否真的发了。 */
 export async function notifyPermissionRequested(params: NotifyPermissionParams): Promise<boolean> {
-  const { agent, request, values } = params;
+  const { paseo, agent, request, values } = params;
   if (!values.notifyPermission) return false;
 
-  const card = buildPermissionCard(agent, request);
+  const requestedAt = Date.now();
+  const card = buildPermissionCard(agent, request, {
+    requestedAt,
+    link: await agentLink(paseo, agent.id),
+  });
   const { messageId } = await sendCard(values, card);
 
-  trackPermission({ agent, request, messageId, values });
+  trackPermission({ agent, request, messageId, values, requestedAt });
   return true;
 }
 

@@ -4,6 +4,7 @@ import { Domain, EventDispatcher, LoggerLevel, WSClient } from "@larksuiteoapi/n
 import { permissionValueSchema } from "../shared/permission-values";
 import type { FeishuSettingsValues } from "../shared/settings";
 import { patchCard } from "./feishu-client";
+import { agentLink } from "./paseo-link";
 import {
   buildPermissionCard,
   buildResolvedCard,
@@ -21,6 +22,10 @@ interface PendingPermission {
   messageId: string;
   values: FeishuSettingsValues;
   picks: QuestionPicks;
+  /** 请求到达时间，用于在卡片上展示到达时刻 / 已等待 / 处理用时 */
+  requestedAt: number;
+  /** 是否由飞书卡片触发处理，置灰卡用它标注来源 */
+  handledFromFeishu: boolean;
 }
 
 /** 飞书长连接推来的原始卡片回调节点 */
@@ -61,6 +66,7 @@ export function trackPermission(params: {
   request: AgentPermissionRequest;
   messageId: string;
   values: FeishuSettingsValues;
+  requestedAt: number;
 }): void {
   pending.set(params.request.id, {
     agent: params.agent,
@@ -68,6 +74,8 @@ export function trackPermission(params: {
     messageId: params.messageId,
     values: params.values,
     picks: new Map(),
+    requestedAt: params.requestedAt,
+    handledFromFeishu: false,
   });
 }
 
@@ -83,8 +91,29 @@ export async function resolvePermissionCard(
   await patchCard(
     item.values,
     item.messageId,
-    buildResolvedCard(item.agent, item.request, resolution),
+    buildResolvedCard(item.agent, item.request, resolution, {
+      source: item.handledFromFeishu ? "feishu" : "paseo",
+      requestedAt: item.requestedAt,
+      link: await deepLink(item.agent.id),
+    }),
   );
+}
+
+/** 深链拿不到就不渲染按钮，卡片其余部分照常工作 */
+async function deepLink(agentId: string): Promise<string | null> {
+  return paseoRef ? agentLink(paseoRef, agentId) : null;
+}
+
+/** 飞书侧点击后立刻回给客户端的结果卡 */
+async function resolvedCardFor(
+  item: PendingPermission,
+  response: AgentPermissionResponse,
+): Promise<unknown> {
+  return buildResolvedCard(item.agent, item.request, response, {
+    source: "feishu",
+    requestedAt: item.requestedAt,
+    link: await deepLink(item.agent.id),
+  });
 }
 
 function toast(type: ToastResult["toast"]["type"], content: string): ToastResult {
@@ -132,6 +161,8 @@ async function submitResponse(
   response: AgentPermissionResponse,
 ): Promise<void> {
   if (!paseoRef) throw new Error("Paseo 连接尚未就绪");
+  // 先标来源，permission_resolved 钩子靠它区分飞书处理还是 Paseo 处理
+  item.handledFromFeishu = true;
   await paseoRef.agents.ref(item.agent.id).respondToPermission({
     requestId: item.request.id,
     response,
@@ -151,7 +182,7 @@ async function submitAnswers(item: PendingPermission): Promise<CardActionReply> 
   await submitResponse(item, response);
   return {
     ...toast("success", "已提交选择"),
-    card: rawCard(buildResolvedCard(item.agent, item.request, response)),
+    card: rawCard(await resolvedCardFor(item, response)),
   };
 }
 
@@ -173,7 +204,13 @@ async function handleOption(
     item.picks.set(questionIndex, picked);
     return {
       ...toast("success", picked.has(optionIndex) ? `已勾选：${option.label}` : `已取消：${option.label}`),
-      card: rawCard(buildPermissionCard(item.agent, item.request, item.picks)),
+      card: rawCard(
+        buildPermissionCard(item.agent, item.request, {
+          picks: item.picks,
+          requestedAt: item.requestedAt,
+          link: await deepLink(item.agent.id),
+        }),
+      ),
     };
   }
 
@@ -184,7 +221,13 @@ async function handleOption(
 
   return {
     ...toast("success", `已选择：${option.label}`),
-    card: rawCard(buildPermissionCard(item.agent, item.request, item.picks)),
+    card: rawCard(
+      buildPermissionCard(item.agent, item.request, {
+        picks: item.picks,
+        requestedAt: item.requestedAt,
+        link: await deepLink(item.agent.id),
+      }),
+    ),
   };
 }
 
@@ -192,7 +235,7 @@ async function handleTool(item: PendingPermission, action: string | undefined): 
   let response: AgentPermissionResponse;
   let message: string;
   if (action === "deny") {
-    response = { behavior: "deny", message: "已在飞书中拒绝" };
+    response = { behavior: "deny", message: "已拒绝" };
     message = "已拒绝";
   } else if (action === "always") {
     response = { behavior: "allow", updatedPermissions: item.request.suggestions ?? [] };
@@ -205,7 +248,7 @@ async function handleTool(item: PendingPermission, action: string | undefined): 
   await submitResponse(item, response);
   return {
     ...toast("success", message),
-    card: rawCard(buildResolvedCard(item.agent, item.request, response)),
+    card: rawCard(await resolvedCardFor(item, response)),
   };
 }
 
@@ -220,7 +263,7 @@ async function handlePlan(item: PendingPermission, actionId: string | undefined)
   await submitResponse(item, response);
   return {
     ...toast("success", `已选择：${action.label}`),
-    card: rawCard(buildResolvedCard(item.agent, item.request, response)),
+    card: rawCard(await resolvedCardFor(item, response)),
   };
 }
 

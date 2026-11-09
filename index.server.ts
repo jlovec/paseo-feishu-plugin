@@ -3,7 +3,7 @@ import "./server/runtime-shim";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { beginRegistration, pollRegistration } from "./server/app-registration";
 import { sendCard } from "./server/feishu-client";
-import { notifyTurnEnded } from "./server/notify";
+import { markTurnStarted, notifyTurnEnded } from "./server/notify";
 import { ensurePermissionBot, setPaseo, stopPermissionBot } from "./server/permission-bot";
 import { markPermissionResolved, notifyPermissionRequested } from "./server/permission-notify";
 import { notifyTestRpc, registrationBeginRpc, registrationPollRpc } from "./shared/rpc";
@@ -57,6 +57,10 @@ export default function contribute(server: PluginServerContext) {
     setPaseo(context.paseo);
   });
 
+  server.on("agent.turn_started", async (event) => {
+    markTurnStarted(event.agent.id);
+  });
+
   server.on("agent.permission_requested", async (event, context) => {
     setPaseo(context.paseo);
 
@@ -69,6 +73,7 @@ export default function contribute(server: PluginServerContext) {
 
     try {
       const sent = await notifyPermissionRequested({
+        paseo: context.paseo,
         agent: event.agent,
         request: event.request,
         values,

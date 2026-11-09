@@ -1,8 +1,17 @@
 import type { PluginHookAgent, PluginLifecycleEvents } from "@getpaseo/plugin/server";
-import { agentFields, truncate } from "./cards";
+import {
+  cardHeader,
+  clockText,
+  formatDuration,
+  metaRow,
+  openPaseoAction,
+  techNote,
+  truncate,
+} from "./cards";
 
 type AgentPermissionRequest = PluginLifecycleEvents["agent.permission_requested"]["request"];
 type AgentPermissionResponse = PluginLifecycleEvents["agent.permission_resolved"]["resolution"];
+type ToolDetail = NonNullable<AgentPermissionRequest["detail"]>;
 
 /** 卡片正文上限，飞书对单条 markdown 有长度限制 */
 const MAX_BODY = 1200;
@@ -71,7 +80,13 @@ export function rawQuestions(request: AgentPermissionRequest): unknown[] {
   return Array.isArray(raw) ? raw : [];
 }
 
-function questionBlock(agent: PluginHookAgent, request: AgentPermissionRequest, question: Question, index: number, picks?: QuestionPicks) {
+function questionBlock(
+  agent: PluginHookAgent,
+  request: AgentPermissionRequest,
+  question: Question,
+  index: number,
+  picks?: QuestionPicks,
+) {
   const picked = picks?.get(index);
   return {
     tag: "action",
@@ -96,28 +111,41 @@ function questionBlock(agent: PluginHookAgent, request: AgentPermissionRequest, 
   };
 }
 
-function questionElements(agent: PluginHookAgent, request: AgentPermissionRequest, picks?: QuestionPicks) {
+function questionElements(
+  agent: PluginHookAgent,
+  request: AgentPermissionRequest,
+  picks?: QuestionPicks,
+) {
   const questions = readQuestions(request);
   const elements: unknown[] = [];
 
   questions.forEach((question, index) => {
+    const picked = picks?.get(index);
+    const progress = questions.length > 1 ? `第 ${index + 1}/${questions.length} 题 · ` : "";
+    const pickedText = question.multiSelect && picked?.size ? `，已选 ${picked.size} 项` : "";
     elements.push({
       tag: "div",
       text: {
         tag: "lark_md",
-        content: `**${index + 1}. ${question.question}**${question.multiSelect ? "（可多选）" : ""}`,
+        content: `**${progress}${question.question}**${
+          question.multiSelect ? `（可多选${pickedText}）` : ""
+        }`,
       },
     });
 
+    const descriptions = question.options
+      .filter((option) => option.description)
+      .map((option) => `**${option.label}** · ${option.description}`)
+      .join("\n");
+    if (descriptions) {
+      elements.push({
+        tag: "div",
+        text: { tag: "lark_md", content: truncate(descriptions, 800) },
+      });
+    }
+
     if (question.options.length > 0) {
       elements.push(questionBlock(agent, request, question, index, picks));
-      const descriptions = question.options
-        .filter((option) => option.description)
-        .map((option) => `${option.label}：${option.description}`)
-        .join("\n");
-      if (descriptions) {
-        elements.push({ tag: "note", elements: [{ tag: "plain_text", content: truncate(descriptions, 600) }] });
-      }
     }
   });
 
@@ -139,10 +167,44 @@ function questionElements(agent: PluginHookAgent, request: AgentPermissionReques
   return elements;
 }
 
+/** 把结构化工具入参压成一句人话，只有拿不到详情时才回退 JSON */
 function toolBody(request: AgentPermissionRequest): string {
-  const detail = request.detail ?? request.input;
-  if (!detail) return "_没有可展示的入参_";
-  return "```json\n" + truncate(JSON.stringify(detail, null, 2), MAX_BODY) + "\n```";
+  const detail: ToolDetail | undefined = request.detail;
+  if (detail) {
+    switch (detail.type) {
+      case "shell":
+        return "```bash\n" + truncate(detail.command, 800) + "\n```";
+      case "read":
+        return `读取文件 \`${truncate(detail.filePath, 300)}\``;
+      case "write":
+        return `写入文件 \`${truncate(detail.filePath, 300)}\``;
+      case "edit":
+        return `编辑文件 \`${truncate(detail.filePath, 300)}\``;
+      case "search":
+        return `搜索 \`${truncate(detail.query, 200)}\``;
+      case "fetch":
+        return `请求 \`${truncate(detail.url, 300)}\``;
+      case "worktree_setup":
+        return `创建 worktree \`${truncate(detail.worktreePath, 200)}\``;
+      case "sub_agent":
+        return `子代理：${truncate(detail.description ?? detail.subAgentType ?? "未命名", 200)}`;
+      case "plain_text": {
+        const text = readString(detail.text) ?? readString(detail.label);
+        return text ? truncate(text, MAX_BODY) : "_没有可展示的入参_";
+      }
+      case "plan":
+        return truncate(detail.text, MAX_BODY);
+      case "unknown":
+        break;
+    }
+  }
+
+  const raw = detail?.type === "unknown" ? detail.input : request.input;
+  if (raw === undefined || raw === null) return "_没有可展示的入参_";
+  if (typeof raw === "object" && !Array.isArray(raw) && Object.keys(raw).length === 0) {
+    return "_没有可展示的入参_";
+  }
+  return "```json\n" + truncate(JSON.stringify(raw, null, 2), 600) + "\n```";
 }
 
 function toolElements(agent: PluginHookAgent, request: AgentPermissionRequest) {
@@ -162,16 +224,21 @@ function toolElements(agent: PluginHookAgent, request: AgentPermissionRequest) {
     },
   ];
   if (canRemember) {
+    // MCP 工具名形如 mcp__server__tool，按钮上只带末段短名
+    const shortName = request.name.split("__").pop() ?? request.name;
     buttons.push({
       tag: "button",
-      text: { tag: "plain_text", content: "总是允许" },
+      text: {
+        tag: "plain_text",
+        content: truncate(shortName.length <= 10 ? `总是允许 ${shortName}` : "总是允许", MAX_BUTTON_LABEL),
+      },
       type: "default",
       value: { a: agent.id, r: request.id, k: "tool" as const, x: "always" },
     });
   }
 
   return [
-    { tag: "div", text: { tag: "lark_md", content: `**工具** \`${request.name}\`` } },
+    { tag: "div", text: { tag: "lark_md", content: `**工具** \`${truncate(request.name, 60)}\`` } },
     { tag: "div", text: { tag: "lark_md", content: toolBody(request) } },
     { tag: "action", actions: buttons },
   ];
@@ -202,27 +269,36 @@ function planElements(agent: PluginHookAgent, request: AgentPermissionRequest) {
   ];
 }
 
-/** 按 kind 生成审批卡片；picks 有值时渲染为「当前勾选状态」的草稿卡片 */
+export interface PermissionCardOptions {
+  /** 有值时渲染成「当前勾选状态」的草稿卡片 */
+  picks?: QuestionPicks;
+  /** 请求到达时间，用于展示到达时刻或已等待时长 */
+  requestedAt?: number;
+  /** paseo 深链，拿不到就不渲染按钮 */
+  link?: string | null;
+}
+
+/** 按 kind 生成审批卡片 */
 export function buildPermissionCard(
   agent: PluginHookAgent,
   request: AgentPermissionRequest,
-  picks?: QuestionPicks,
+  options: PermissionCardOptions = {},
 ) {
   let template = "blue";
-  let title = "🔐 需要审批";
+  let event = "🔐 需要审批";
   let elements: unknown[];
 
   if (request.kind === "question") {
     template = "blue";
-    title = "❓ 需要选择";
-    elements = questionElements(agent, request, picks);
+    event = "❓ 需要选择";
+    elements = questionElements(agent, request, options.picks);
   } else if (request.kind === "plan") {
     template = "orange";
-    title = "📋 计划待确认";
+    event = "📋 计划待确认";
     elements = planElements(agent, request);
   } else if (request.kind === "tool") {
     template = "orange";
-    title = "🔧 工具授权";
+    event = "🔧 工具授权";
     elements = toolElements(agent, request);
   } else {
     elements = toolElements(agent, request);
@@ -232,23 +308,30 @@ export function buildPermissionCard(
     elements.unshift({ tag: "div", text: { tag: "lark_md", content: truncate(request.title, 300) } });
   }
 
+  const requestedAt = options.requestedAt ?? Date.now();
+  const meta = options.picks
+    ? metaRow(agent, "已等待", formatDuration(Date.now() - requestedAt))
+    : metaRow(agent, "到达", clockText(requestedAt));
+  const linkAction = openPaseoAction(options.link);
+
   return {
     config: { wide_screen_mode: true },
-    header: {
-      template,
-      title: { tag: "plain_text", content: title },
-    },
+    header: cardHeader(template, event, agent),
     elements: [
-      agentFields(agent),
+      meta,
       { tag: "hr" },
       ...elements,
-      { tag: "note", elements: [{ tag: "plain_text", content: `Paseo · ${agent.provider} · 请求 ${request.id}` }] },
+      ...(linkAction ? [linkAction] : []),
+      techNote(agent),
     ],
   };
 }
 
 /** 把一次已完成的审批描述成一句话 */
-function describeResolution(request: AgentPermissionRequest, resolution: AgentPermissionResponse): string {
+function describeResolution(
+  request: AgentPermissionRequest,
+  resolution: AgentPermissionResponse,
+): string {
   if (resolution.behavior === "deny") {
     return resolution.message ? `已拒绝：${truncate(resolution.message, 200)}` : "已拒绝";
   }
@@ -274,20 +357,29 @@ function describeResolution(request: AgentPermissionRequest, resolution: AgentPe
   return remembered ? "已允许，并记住该权限" : "已允许";
 }
 
+export interface ResolvedCardOptions {
+  /** 在哪个界面处理：飞书卡片还是 Paseo 客户端 */
+  source: "feishu" | "paseo";
+  requestedAt?: number;
+  link?: string | null;
+}
+
 /** 审批处理完之后的置灰卡片，替换掉原来的按钮 */
 export function buildResolvedCard(
   agent: PluginHookAgent,
   request: AgentPermissionRequest,
   resolution: AgentPermissionResponse,
+  options: ResolvedCardOptions,
 ) {
+  const waited =
+    options.requestedAt == null ? "未知" : formatDuration(Date.now() - options.requestedAt);
+  const linkAction = openPaseoAction(options.link);
+
   return {
     config: { wide_screen_mode: true },
-    header: {
-      template: "grey",
-      title: { tag: "plain_text", content: "✅ 审批已处理" },
-    },
+    header: cardHeader("grey", "✅ 已处理", agent),
     elements: [
-      agentFields(agent),
+      metaRow(agent, "处理用时", waited),
       { tag: "hr" },
       {
         tag: "div",
@@ -295,8 +387,12 @@ export function buildResolvedCard(
       },
       {
         tag: "note",
-        elements: [{ tag: "plain_text", content: `请求 ${request.id}` }],
+        elements: [
+          { tag: "plain_text", content: `来源：${options.source === "feishu" ? "飞书" : "Paseo"}` },
+        ],
       },
+      ...(linkAction ? [linkAction] : []),
+      techNote(agent),
     ],
   };
 }
