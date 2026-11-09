@@ -6,6 +6,18 @@
 
 插件在 Paseo 应用里提供一个设置页，可以扫码创建飞书机器人并自动填入 App ID 与 App Secret，也可以手动填写。
 
+## 安装
+
+在 Paseo 所在机器上执行：
+
+```bash
+paseo plugin install git:jlovec/paseo-feishu-plugin --ref feat/approval-notify
+```
+
+`paseo-plugin.json` 声明了 `build` 步骤（`npm ci --omit=dev`），Git 安装时会自动装好 `@larksuiteoapi/node-sdk` 与 `qrcode`。
+
+每台机器应通过设置页扫码**创建独立的飞书应用**：飞书长连接是集群模式、不广播，同一应用部署多个客户端时事件只会随机投递到一个实例，另一台的审批回调会落空。
+
 ## 配置
 
 需要一个飞书自建应用的 App ID 与 App Secret，以及一个接收通知的会话 ID。扫码流程会自动创建应用并填入凭据；手动配置需要先在飞书开放平台建好应用并授予消息与卡片相关权限。
